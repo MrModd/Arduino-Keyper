@@ -56,6 +56,20 @@ AESLibrary in the Arduino IDE. You can find this library with the
 installation instructions here:
 	https://github.com/DavyLandman/AESLib
 
+One issue you could encounter is that if you type a password containing
+special characters that change position on the keyboard depending on
+the layout, it's possible that some characters are typed wrong.
+This is caused by the keyboard HID library of the Arduino IDE that uses
+just the english layout.
+For clearance the effect is as if you type you password on a keyboard,
+thinking you have your regional layout set and instead you type on an
+english layout.
+I modified the HID library setting the italian layout (even if I wasn't
+able to set all the keys correctly). To use this you need to overwrite
+the HID.cpp file in the hardware/arduino/cores/arduino/ directory of the
+IDE with the file provided in this repository (backup old file before
+overwrite).
+
 --How does it work
 
 After you upload the sketch and you power on the Arduino, you can see the
