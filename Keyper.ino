@@ -1,5 +1,5 @@
 /*  Keyper - A Pasword Keeper
- *  v2.1 build 20130318
+ *  v2.2 build 20130405
  *
  *  Starting project date: 29/01/2013
  *
@@ -272,6 +272,7 @@ void loop()
     digitalWrite(GREEN_LED, LOW);
     timeout = -1;
     while(pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0;
+    for (uint8_t i = 0; i < KEY_LEN; i++) key[i] = 0;
     locked = true;
     if (serial) {
       Serial.println("Keyper is now locked!");
@@ -293,6 +294,7 @@ void loop()
       digitalWrite(GREEN_LED, LOW);
       timeout = -1;
       while(pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0;
+      for (uint8_t i = 0; i < KEY_LEN; i++) key[i] = 0;
       locked = true;
       if (serial) {
         Serial.println("Keyper is now locked!");
@@ -634,7 +636,7 @@ void serialPrintWelcomeMessage(void)
 
 void serialPrintMenu(void)
 {
-  Serial.println("\r\nKeyper by MrModd v 2.1 build 20130318\r\nA Password keeper and typer\r\n");
+  Serial.println("\r\nKeyper by MrModd v 2.2 build 20130405\r\nA Password keeper and typer\r\n");
   Serial.println("Make your choice:");
   Serial.println("help ........ Print this help");
   Serial.println("lock ........ Lock the device");
@@ -662,6 +664,7 @@ void serialManageOption()
     digitalWrite(GREEN_LED, LOW);
     timeout = -1;
     while(pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0;
+    for (uint8_t i = 0; i < KEY_LEN; i++) key[i] = 0;
     locked = true;
     Serial.println("Keyper is now locked!");
     analogWrite(RED_LED, pwm_val);

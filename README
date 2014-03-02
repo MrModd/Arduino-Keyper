@@ -76,6 +76,10 @@ Then simply press one of the four buttons of the Keyper followed by
 the OK button. On your computer should be appeared the password stored
 under that button.
 
+--New in version 2.2
+
+Bugfix: PIN buffer wasn't erased after locking the device.
+
 --New in version 2.1
 
 Now you can relock the Keyper with a long pressure of the OK button or
