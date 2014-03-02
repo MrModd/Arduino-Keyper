@@ -1,5 +1,5 @@
 Keyper - A Pasword Keeper
-Version 1.0 build 20130225
+Version 2.0 build 20130226
 
 Copyright (C) 2013  Federico "MrModd" Cosentino (http://mrmodd.it/)
 
@@ -25,6 +25,8 @@ no necessity to install any driver.
 Keyper can store in an external EEPROM up to 4 password, 100 characters
 per password. When powered on you need to unlock the device typing a PIN
 code.
+All password are encrypted with AES alghorithm and the PIN code is the
+key to decrypt them.
 To manage the passwords stored and to reset the PIN code, Keyper uses the
 serial console. You can use either the Arduino IDE serial console or
 any other program such as minicom.
@@ -42,11 +44,18 @@ used the 24LC256, but you can find in the sketch some other compatible
 models.
 
 Buttons doesn't require a pullup/pulldown resistor, because the
-Arduino internal pullup is used for each one. The Microchip EEPROM uses
-I2C protocol, so that you have to connect it to SDA and SCL pin of the
-Arduino, but you can decide where the write-protect pin of the
+Arduino internal pullup is used for each of them. The Microchip EEPROM
+uses I2C protocol, so that you have to connect it to SDA and SCL pin of
+the Arduino, but you can decide where the write-protect pin of the
 EEPROM is wired and where the buttons and LEDs are connected. You should
 connect LEDs to PWM output port in order to get the right behaviour.
+
+--External library requirements
+
+Before you can upload the sketch to the Arduino you need to install the
+AESLibrary in the Arduino IDE. You can find this library with the
+installation instructions here:
+	https://github.com/DavyLandman/AESLib
 
 --How does it work
 
@@ -67,3 +76,8 @@ on a box area where you can type with the keyboard (for example a Notepad).
 Then simply press one of the four buttons of the Keyper followed by
 the OK button. On your computer should be appeared the password stored
 under that button.
+
+-- New in version 2.0
+
+Now passwords are encrypted with the AES library for Arduino and you can
+only read them if you know the PIN code.
