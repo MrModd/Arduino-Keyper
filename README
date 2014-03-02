@@ -1,0 +1,69 @@
+Keyper - A Pasword Keeper
+Version 1.0 build 20130225
+
+Copyright (C) 2013  Federico "MrModd" Cosentino (http://mrmodd.it/)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+// -------------------------------------------------------------//
+
+Keyper is an Arduino Micro based device. Its intent is to help people
+entering passwords without the necessity to type them with the keyboard.
+The computer recognizes this device as a keyboard itself so that there's
+no necessity to install any driver.
+Keyper can store in an external EEPROM up to 4 password, 100 characters
+per password. When powered on you need to unlock the device typing a PIN
+code.
+To manage the passwords stored and to reset the PIN code, Keyper uses the
+serial console. You can use either the Arduino IDE serial console or
+any other program such as minicom.
+
+--Configuration
+
+This device uses an Arduino Micro, because it uses an ATmega32u4 which
+has a built-in USB comunication. This makes possible to connect to the
+computer as a keyboard and a serial port at the same time. Other
+Arduino devices with the same ATmega32u4, such as the Arduino Leonardo,
+should works with this sketch.
+In addition to the Arduino this project requires five buttons, a red-green
+LED (with a 220 OHM resistor per LED) and a Microchip (R) I2C EEPROM. I
+used the 24LC256, but you can find in the sketch some other compatible
+models.
+
+Buttons doesn't require a pullup/pulldown resistor, because the
+Arduino internal pullup is used for each one. The Microchip EEPROM uses
+I2C protocol, so that you have to connect it to SDA and SCL pin of the
+Arduino, but you can decide where the write-protect pin of the
+EEPROM is wired and where the buttons and LEDs are connected. You should
+connect LEDs to PWM output port in order to get the right behaviour.
+
+--How does it work
+
+After you upload the sketch and you power on the Arduino, you can see the
+red LED glowing. You should unlock the device with the PIN code, but
+since you haven't set up it yet, you can't. The first time you need to
+connect to the serial console of the Arduino in order to erase the memory.
+After doing that you can unlock it just clicking the OK button. After
+unlocking the device you can see some available options you can do over
+the serial terminal, such as set a new PIN code or store/overwrite a
+password. Follow the on-screen instruction to finalize the settings of
+the Keyper.
+Once you did that, your device is ready to go. When you power on the
+Arduino wait for the red LED glowing and then type the PIN followed by
+the OK button. Keyper should now be unlocked and ready to type one of
+the four passwords stored. Connect the Arduino to a computer and focus
+on a box area where you can type with the keyboard (for example a Notepad).
+Then simply press one of the four buttons of the Keyper followed by
+the OK button. On your computer should be appeared the password stored
+under that button.
