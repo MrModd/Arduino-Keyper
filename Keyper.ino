@@ -1,5 +1,5 @@
 /*  Keyper - A Pasword Keeper
- *  v2.0 build 20130226
+ *  v2.1 build 20130318
  *
  *  Starting project date: 29/01/2013
  *
@@ -40,6 +40,8 @@
 #define PIN_BUFFER_LEN                 KEY_LEN //Max dimension for pin buffer (must be at least greater or equal than the dimension of pin stored on EEPROM)
 #define SERIAL_BUFFER_LEN              128 //Max dimension for the serial buffer (must be at least greater or equal than the dimension of each data stored on EEPROM)
 #define TIMEOUT                        100 //for 5 seconds (delay(50))
+#define LOCK_TIMEOUT                   2400 //2 minutes (delay(50))
+#define LONG_PRESS                     3000 //milliseconds to wait for a long press behaviour
 #define PASSWORD_1                     0 // Password 1 index
 #define PASSWORD_2                     1 // Password 2 index
 #define PASSWORD_3                     2 // Password 3 index
@@ -73,6 +75,7 @@ boolean growing; //True if pwm value for the LED is increasing, false if it's de
 boolean locked; //True if the device's pin has not been entered yet
 boolean serial; //True if serial console has been opened
 int timeout; //Timeout before the reset of the device
+unsigned int lock_timeout; //Timeout before locking the device
 uint8_t pin_buffer[PIN_BUFFER_LEN]; //It will keep temporary data from keypad
 uint8_t pin_buffer_index;
 char serial_buffer[SERIAL_BUFFER_LEN + 1]; //It will keep temporary data from serial console
@@ -135,6 +138,7 @@ void setup()
   locked = true;
   serial = false;
   timeout = -1;
+  lock_timeout = LOCK_TIMEOUT;
   pin_buffer_index = 0;
   serial_buffer_index = 0;
   for (uint8_t i = 0; i < PIN_BUFFER_LEN; i++) pin_buffer[i] = 0;
@@ -217,10 +221,13 @@ void loop()
       }
     }
   }
+  else if (serial) { //Should never happen
+    serial = false;
+  }
 
   /*
    * ============================
-   * Growing and timeout controls
+   * Growing and timeouts controls
    * ============================
    */
   if (timeout == -1) {
@@ -249,12 +256,27 @@ void loop()
       }
     }
   }
-  else {
+  else { //Decrease digit timeout
     timeout--;
     if (timeout < 0) {
       //Reset buffer
       while(pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0;
     }
+  }
+  //Decrease device timeout
+  if (lock_timeout > 0 && !locked) {
+    lock_timeout--;
+  }
+  else if (lock_timeout == 0 && !locked) { //After LOCK_TIMEOUT*50 ms lock the device if unlocked
+    //Lock the device
+    digitalWrite(GREEN_LED, LOW);
+    timeout = -1;
+    while(pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0;
+    locked = true;
+    if (serial) {
+      Serial.println("Keyper is now locked!");
+    }
+    analogWrite(RED_LED, pwm_val);
   }
 
   /*
@@ -263,102 +285,120 @@ void loop()
    * ================
    */
   if (digitalRead(BUTTON_OK) == LOW) {
-    while(digitalRead(BUTTON_OK) == LOW); //Wait until key is released
+    unsigned long time = millis();
+    while(digitalRead(BUTTON_OK) == LOW && millis() - time < LONG_PRESS); //Wait until key is released or the keystroke is considered a long pressure
     
-    //Keypad is locked
-    if (locked) {
-      digitalWrite(RED_LED, LOW);
-      //Check if the pin inserted is correct
-      if (checkPin()) { //Pin is correct
-        //Notify to the user
-        blinkLED(GREEN_LED);
-        //Unlock the device
-        locked = false;
-        //Reset timeout
-        timeout = -1;
-        //Empty buffer
-        while (pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0;
-        
-        //Print on serial
-        if (Serial && serial) {
-          Serial.println("\r\nKeyper is now unlocked!");
-          serialPrintWelcomeMessage();
-          serialPrintMenu();
-          while (serial_buffer_index > 0) serial_buffer[--serial_buffer_index] = 0; //Empty buffer
-          while(Serial.available()) Serial.read(); //Empty incoming queue
-        }
-        
-        //Turn on green LED
-        analogWrite(GREEN_LED, pwm_val);
+    if (millis() - time >= LONG_PRESS) { //If it was a long pressure
+      //Lock the device
+      digitalWrite(GREEN_LED, LOW);
+      timeout = -1;
+      while(pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0;
+      locked = true;
+      if (serial) {
+        Serial.println("Keyper is now locked!");
       }
-      else { //Pin is not correct
-        //Notify to the user
-        blinkLED(RED_LED);
-        
-        //Print on serial
-        if (Serial && serial) {
-          Serial.println("Wrong pin!");
-        }
-        
-        //Restore red LED
-        analogWrite(RED_LED, pwm_val);
-      }
+      analogWrite(RED_LED, pwm_val);
+      while(digitalRead(BUTTON_OK) == LOW); //Wait until key is released
     }
-    //Keypad is not locked
-    else { //If (!locked)
-      if (pin_buffer[0] == 0) { //No password was selected
-        //Notify to the user
-        digitalWrite(GREEN_LED, LOW);
-        blinkLED(RED_LED);
-        
-        //Print on serial
-        if (Serial && serial) {
-          Serial.println("Please, select a password first.");
+    else {
+      //Keypad is locked
+      if (locked) {
+        digitalWrite(RED_LED, LOW);
+        //Check if the pin inserted is correct
+        if (checkPin()) { //Pin is correct
+          //Notify to the user
+          blinkLED(GREEN_LED);
+          //Unlock the device
+          locked = false;
+          //Reset timeout
+          timeout = -1;
+          lock_timeout = LOCK_TIMEOUT;
+          //Empty buffer
+          while (pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0;
+          
+          //Print on serial
+          if (serial) {
+            Serial.println("\r\nKeyper is now unlocked!");
+            serialPrintWelcomeMessage();
+            serialPrintMenu();
+            while (serial_buffer_index > 0) serial_buffer[--serial_buffer_index] = 0; //Empty buffer
+            while(Serial.available()) Serial.read(); //Empty incoming queue
+          }
+          
+          //Turn on green LED
+          analogWrite(GREEN_LED, pwm_val);
         }
-        
-        //Restore green LED
-        analogWrite(GREEN_LED, pwm_val);
-      }
-      else {
-        //Notify to the user
-        blinkLED(GREEN_LED);
-        
-        //Write password
-        switch (pin_buffer[0]) {
-        case 1:
-          typePassword(PASSWORD_1);
-          if (Serial && serial) {
-            Serial.println("Password 1 written!");
+        else { //Pin is not correct
+          //Notify to the user
+          blinkLED(RED_LED);
+          
+          //Print on serial
+          if (serial) {
+            Serial.println("Wrong pin!");
           }
-          break;
-        case 2:
-          typePassword(PASSWORD_2);
-          if (Serial && serial) {
-            Serial.println("Password 2 written!");
-          }
-          break;
-        case 3:
-          typePassword(PASSWORD_3);
-          if (Serial && serial) {
-            Serial.println("Password 3 written!");
-          }
-          break;
-        case 4:
-          typePassword(PASSWORD_4);
-          if (Serial && serial) {
-            Serial.println("Password 4 written!");
-          }
-          break;
+          
+          //Restore red LED
+          analogWrite(RED_LED, pwm_val);
         }
-        
-        //Restore green LED
-        analogWrite(GREEN_LED, pwm_val);
       }
+      //Keypad is not locked
+      else { //If (!locked)
+        if (pin_buffer[0] == 0) { //No password was selected
+          //Notify to the user
+          digitalWrite(GREEN_LED, LOW);
+          blinkLED(RED_LED);
+          
+          //Print on serial
+          if (serial) {
+            Serial.println("Please, select a password first.");
+          }
+          
+          //Restore green LED
+          analogWrite(GREEN_LED, pwm_val);
+        }
+        else {
+          //Notify to the user
+          blinkLED(GREEN_LED);
+          
+          //Write password
+          switch (pin_buffer[0]) {
+          case 1:
+            typePassword(PASSWORD_1);
+            if (serial) {
+              Serial.println("Password 1 written!");
+            }
+            break;
+          case 2:
+            typePassword(PASSWORD_2);
+            if (serial) {
+              Serial.println("Password 2 written!");
+            }
+            break;
+          case 3:
+            typePassword(PASSWORD_3);
+            if (serial) {
+              Serial.println("Password 3 written!");
+            }
+            break;
+          case 4:
+            typePassword(PASSWORD_4);
+            if (serial) {
+              Serial.println("Password 4 written!");
+            }
+            break;
+          }
+          
+          //Restore green LED
+          analogWrite(GREEN_LED, pwm_val);
+        }
+        //Reset lock timeout
+        lock_timeout = LOCK_TIMEOUT;
+      }
+      //Reset buffer
+      while(pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0;
+      //Reset timeout
+      timeout = -1;
     }
-    //Reset buffer
-    while(pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0;
-    //Reset timeout
-    timeout = -1;
   } /* if (digitalRead(BUTTON_OK) == LOW) */
   else if (digitalRead(BUTTON_1) == LOW) {
     while(digitalRead(BUTTON_1) == LOW); //Wait until key is released
@@ -382,6 +422,8 @@ void loop()
       pin_buffer_index = 1;
       //Start timeout
       timeout = TIMEOUT;
+      //Reset lock timeout
+      lock_timeout = LOCK_TIMEOUT;
     }
   }
   else if (digitalRead(BUTTON_2) == LOW) {
@@ -406,6 +448,8 @@ void loop()
       pin_buffer_index = 1;
       //Start timeout
       timeout = TIMEOUT;
+      //Reset lock timeout
+      lock_timeout = LOCK_TIMEOUT;
     }
   }
   else if (digitalRead(BUTTON_3) == LOW) {
@@ -430,6 +474,8 @@ void loop()
       pin_buffer_index = 1;
       //Start timeout
       timeout = TIMEOUT;
+      //Reset lock timeout
+      lock_timeout = LOCK_TIMEOUT;
     }
   }
   else if (digitalRead(BUTTON_4) == LOW) {
@@ -454,6 +500,8 @@ void loop()
       pin_buffer_index = 1;
       //Start timeout
       timeout = TIMEOUT;
+      //Reset lock timeout
+      lock_timeout = LOCK_TIMEOUT;
     }
   }
   
@@ -505,7 +553,7 @@ boolean checkPin(void)
   char message[KEY_MESG_LEN];
   //Reading message from EEPROM
   if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, KEY_MESG_ADDR, (byte*)message, KEY_MESG_LEN)) {
-    /*if (Serial && serial) {
+    /*if (serial) {
       Serial.println("Error while reading EEPROM");
     }*/
     errorLED();
@@ -535,7 +583,7 @@ void typePassword(uint8_t n)
   //Variables declaration
   char *pass = (char *)malloc(sizeof(char)*PASS_LEN[n]);
   if (pass == NULL) {
-    /*if (Serial && serial) {
+    /*if (serial) {
       Serial.println("Error in malloc().");
     }*/
     errorLED();
@@ -544,7 +592,7 @@ void typePassword(uint8_t n)
 
   //Reading
   if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, PASS_ADDR[n], (byte *)pass, PASS_LEN[n])) {
-    /*if (Serial && serial) {
+    /*if (serial) {
       Serial.println("Error while reading EEPROM");
     }*/
     errorLED();
@@ -586,7 +634,7 @@ void serialPrintWelcomeMessage(void)
 
 void serialPrintMenu(void)
 {
-  Serial.println("\r\nKeyper by MrModd v 2.0 built 20130226\r\nA Password keeper and typer\r\n");
+  Serial.println("\r\nKeyper by MrModd v 2.1 build 20130318\r\nA Password keeper and typer\r\n");
   Serial.println("Make your choice:");
   Serial.println("help ........ Print this help");
   Serial.println("lock ........ Lock the device");

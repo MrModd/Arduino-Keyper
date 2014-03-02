@@ -1,5 +1,4 @@
 Keyper - A Pasword Keeper
-Version 2.0 build 20130226
 
 Copyright (C) 2013  Federico "MrModd" Cosentino (http://mrmodd.it/)
 
@@ -77,7 +76,12 @@ Then simply press one of the four buttons of the Keyper followed by
 the OK button. On your computer should be appeared the password stored
 under that button.
 
--- New in version 2.0
+--New in version 2.1
+
+Now you can relock the Keyper with a long pressure of the OK button or
+simply wait 2 minutes until it locks itself.
+
+--New in version 2.0
 
 Now passwords are encrypted with the AES library for Arduino and you can
 only read them if you know the PIN code.
