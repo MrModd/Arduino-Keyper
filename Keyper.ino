@@ -1,5 +1,5 @@
 /*  Keyper - A Pasword Keeper
- *  v1.0 build 20130225
+ *  v2.0 build 20130226
  *
  *  Starting project date: 29/01/2013
  *
@@ -20,74 +20,77 @@
  */
 
 #include <Wire.h> //I2C library
+#include <AESLib.h> //AES 128 bit encoding library
 
-#define IN_CIRCUIT_LED 13 //Arduino LED
-#define EEPROM_ADDR 0x50 //1010 000 (it's a 7-bit address)
+/* ===== HARDWARE ADDRESSES ===== */
+#define IN_CIRCUIT_LED       13 //Arduino LED
+#define EEPROM_ADDR          0x50 //1010 000 (it's a 7-bit address)
 #define EEPROM_WRITE_PROTECT 4
-#define RED_LED 5 //Must be a PWM output
-#define GREEN_LED 6 //Must be a PWM output
-#define BUTTON_OK 7
-#define BUTTON_1 8
-#define BUTTON_2 9
-#define BUTTON_3 11
-#define BUTTON_4 10
+#define RED_LED              5 //Must be a PWM output
+#define GREEN_LED            6 //Must be a PWM output
+#define BUTTON_OK            7
+#define BUTTON_1             8
+#define BUTTON_2             9
+#define BUTTON_3             11
+#define BUTTON_4             10
+
+/* ========== CONSTANTS ========== */
+#define MAX_ADDRESS                    32768 //Last address + 1 of the EEPROM (32768 == 256kb EEPROM)
+#define KEY_LEN                        16 //Length of the key used for encrypt/decrypt passwords. This MUST be 16
+#define PIN_BUFFER_LEN                 KEY_LEN //Max dimension for pin buffer (must be at least greater or equal than the dimension of pin stored on EEPROM)
+#define SERIAL_BUFFER_LEN              128 //Max dimension for the serial buffer (must be at least greater or equal than the dimension of each data stored on EEPROM)
+#define TIMEOUT                        100 //for 5 seconds (delay(50))
+#define PASSWORD_1                     0 // Password 1 index
+#define PASSWORD_2                     1 // Password 2 index
+#define PASSWORD_3                     2 // Password 3 index
+#define PASSWORD_4                     3 // Password 4 index
+const char challenge_mesg[] =          "MrModd"; //It is used to test if the inserted pin is the correct one (see checkPin() function)
+const char wait[] =                    "Wait...";
+const char done[] =                    "Done!";
+const char too_long[] =                "\r\nToo long!";
 
 /* ======== DATA ADDRESSES ======== */
-/* All data are stored as strings.
- * This means that every string of
- * length n, uses n+1 bytes because
- * of the '\0' at the end of the char
- * array.
- * Please, take note when addressing
- * strings.
- */
-#define MAX_ADDRESS 32768 //Last address + 1 of the EEPROM (32768 == 256kb EEPROM)
-#define INITIAL_MESSAGE_ADDR       0 //Welcome message
-#define INITIAL_MESSAGE_LEN 100 //Max length of the initial message
-#define PIN_ADDR                 101 //Pin code necessary to unlock the device
-#define PIN_LEN              10 //Max length of the pin
+//Welcome message
+#define INITIAL_MESSAGE_ADDR           0
+#define INITIAL_MESSAGE_LEN            100
+//Encrypted message used to challenge pin typed by user. It contains a well known message, defined by the constant challenge_mesg (see above)
+#define KEY_MESG_ADDR                  100
+#define KEY_MESG_LEN                   16 //It MUST be multiple of 16, because the encoding library encrypt/decrypt block of 16 bytes of data
 const unsigned int PASS_ADDR[] = {
-  112,   // Password 1
-  213,   // Password 2
-  314,   // Password 3
-  415 }; // Password 4
-const unsigned int PASS_LEN[] = {
-  100,   // Password 1
-  100,   // Password 2
-  100,   // Password 3
-  100 }; // Password 4
-#define PASSWORD_1          0 // Password 1 index
-#define PASSWORD_2          1 // Password 2 index
-#define PASSWORD_3          2 // Password 3 index
-#define PASSWORD_4          3 // Password 4 index
+  116,   // Password 1
+  244,   // Password 2
+  372,   // Password 3
+  500 }; // Password 4
+const unsigned int PASS_LEN[] = { //It MUST be multiple of 16, because the encoding library encrypt/decrypt block of 16 bytes of data
+  128,   // Password 1
+  128,   // Password 2
+  128,   // Password 3
+  128 }; // Password 4
 
-#define PIN_BUFFER_LEN PIN_LEN //Max dimension for pin buffer (must be at least greater or equal than the dimension of pin stored on EEPROM)
-#define SERIAL_BUFFER_LEN 200 //Max dimension for the serial buffer (must be at least greater or equal than the dimension of each data stored on EEPROM)
-#define TIMEOUT 100 //for 5 seconds (delay(50))
-
-/* VARIABLES */
+/* ========== VARIABLES ========== */
 int pwm_val; //Current PWM value for the LED
 boolean growing; //True if pwm value for the LED is increasing, false if it's decreasing
 boolean locked; //True if the device's pin has not been entered yet
 boolean serial; //True if serial console has been opened
 int timeout; //Timeout before the reset of the device
-char pin_buffer[PIN_BUFFER_LEN + 1]; //It will keep temporary data from keypad
+uint8_t pin_buffer[PIN_BUFFER_LEN]; //It will keep temporary data from keypad
 uint8_t pin_buffer_index;
 char serial_buffer[SERIAL_BUFFER_LEN + 1]; //It will keep temporary data from serial console
 uint8_t serial_buffer_index;
+uint8_t key[KEY_LEN]; //While the device is unlocked, it keeps the key to decrypt data stored in EEPROM
 
-/* FUNCTIONS */
+/* ========== FUNCTIONS ========== */
 void blinkLED(uint8_t led);
 void flashLED(uint8_t led);
 void errorLED();
-boolean checkPin(char pin[]);
+boolean checkPin(void);
 void typePassword(uint8_t n);
 void serialPrintWelcomeMessage(void);
 void serialPrintMenu(void);
 void serialManageOption(void);
 void wipeData(void);
 boolean readLine(char *buffer, uint8_t length, boolean hide_typing);
-void readPin(char *buffer, uint8_t length);
+void readPin(uint8_t *buffer, uint8_t length);
 boolean i2c_1024kb_eeprom_read_byte(byte i2caddr, unsigned long byteaddr, byte *data);
 void i2c_1024kb_eeprom_write_byte(byte i2caddr, unsigned long byteaddr, byte data);
 boolean i2c_1024kb_eeprom_read_buffer(byte i2caddr, unsigned long byteaddr, byte data[], unsigned int length);
@@ -134,9 +137,10 @@ void setup()
   timeout = -1;
   pin_buffer_index = 0;
   serial_buffer_index = 0;
-  for (int i = 0; i < PIN_BUFFER_LEN; i++) pin_buffer[i] = 0;
-  for (int i = 0; i < SERIAL_BUFFER_LEN; i++) serial_buffer[i] = 0;
-
+  for (uint8_t i = 0; i < PIN_BUFFER_LEN; i++) pin_buffer[i] = 0;
+  for (uint8_t i = 0; i < SERIAL_BUFFER_LEN; i++) serial_buffer[i] = 0;
+  for (uint8_t i = 0; i < KEY_LEN; i++) key[i] = 0;
+  
   //Initialization complete
   for(int i = 255; i >= 0; i -= 5) {
     analogWrite(IN_CIRCUIT_LED, i);
@@ -207,7 +211,7 @@ void loop()
       }
       //If there are too much data in serial input (more than buffer dimension)
       else if (serial_buffer_index >= SERIAL_BUFFER_LEN) {
-        Serial.println("\r\nBuffer overflow!!!");
+        Serial.println(too_long);
         while (serial_buffer_index > 0) serial_buffer[--serial_buffer_index] = 0; //Empty buffer
         while(Serial.available()) Serial.read(); //Empty incoming queue
       }
@@ -265,7 +269,7 @@ void loop()
     if (locked) {
       digitalWrite(RED_LED, LOW);
       //Check if the pin inserted is correct
-      if (checkPin(pin_buffer)) { //Pin is correct
+      if (checkPin()) { //Pin is correct
         //Notify to the user
         blinkLED(GREEN_LED);
         //Unlock the device
@@ -321,25 +325,25 @@ void loop()
         
         //Write password
         switch (pin_buffer[0]) {
-        case '1':
+        case 1:
           typePassword(PASSWORD_1);
           if (Serial && serial) {
             Serial.println("Password 1 written!");
           }
           break;
-        case '2':
+        case 2:
           typePassword(PASSWORD_2);
           if (Serial && serial) {
             Serial.println("Password 2 written!");
           }
           break;
-        case '3':
+        case 3:
           typePassword(PASSWORD_3);
           if (Serial && serial) {
             Serial.println("Password 3 written!");
           }
           break;
-        case '4':
+        case 4:
           typePassword(PASSWORD_4);
           if (Serial && serial) {
             Serial.println("Password 4 written!");
@@ -359,12 +363,12 @@ void loop()
   else if (digitalRead(BUTTON_1) == LOW) {
     while(digitalRead(BUTTON_1) == LOW); //Wait until key is released
     //If locked
-    if (locked && pin_buffer_index < PIN_LEN) {
+    if (locked && pin_buffer_index < PIN_BUFFER_LEN) {
       //Notify to the user
       digitalWrite(RED_LED, LOW);
       flashLED(GREEN_LED);
       //Add value to the buffer
-      pin_buffer[pin_buffer_index++] = '1';
+      pin_buffer[pin_buffer_index++] = 1;
       //Start timeout
       timeout = TIMEOUT;
     }
@@ -374,7 +378,7 @@ void loop()
       digitalWrite(GREEN_LED, LOW);
       flashLED(GREEN_LED);
       //Add value to the buffer
-      pin_buffer[0] = '1';
+      pin_buffer[0] = 1;
       pin_buffer_index = 1;
       //Start timeout
       timeout = TIMEOUT;
@@ -383,12 +387,12 @@ void loop()
   else if (digitalRead(BUTTON_2) == LOW) {
     while(digitalRead(BUTTON_2) == LOW); //Wait until key is released
     //If locked
-    if (locked && pin_buffer_index < PIN_LEN) {
+    if (locked && pin_buffer_index < PIN_BUFFER_LEN) {
       //Notify to the user
       digitalWrite(RED_LED, LOW);
       flashLED(GREEN_LED);
       //Add value to the buffer
-      pin_buffer[pin_buffer_index++] = '2';
+      pin_buffer[pin_buffer_index++] = 2;
       //Start timeout
       timeout = TIMEOUT;
     }
@@ -398,7 +402,7 @@ void loop()
       digitalWrite(GREEN_LED, LOW);
       flashLED(GREEN_LED);
       //Add value to the buffer
-      pin_buffer[0] = '2';
+      pin_buffer[0] = 2;
       pin_buffer_index = 1;
       //Start timeout
       timeout = TIMEOUT;
@@ -406,13 +410,13 @@ void loop()
   }
   else if (digitalRead(BUTTON_3) == LOW) {
     while(digitalRead(BUTTON_3) == LOW); //Wait until key is released
-    if (locked && pin_buffer_index < PIN_LEN) {
+    if (locked && pin_buffer_index < PIN_BUFFER_LEN) {
       //If locked
       //Notify to the user
       digitalWrite(RED_LED, LOW);
       flashLED(GREEN_LED);
       //Add value to the buffer
-      pin_buffer[pin_buffer_index++] = '3';
+      pin_buffer[pin_buffer_index++] = 3;
       //Start timeout
       timeout = TIMEOUT;
     }
@@ -422,7 +426,7 @@ void loop()
       digitalWrite(GREEN_LED, LOW);
       flashLED(GREEN_LED);
       //Add value to the buffer
-      pin_buffer[0] = '3';
+      pin_buffer[0] = 3;
       pin_buffer_index = 1;
       //Start timeout
       timeout = TIMEOUT;
@@ -431,12 +435,12 @@ void loop()
   else if (digitalRead(BUTTON_4) == LOW) {
     while(digitalRead(BUTTON_4) == LOW); //Wait until key is released
     //If locked
-    if (locked && pin_buffer_index < PIN_LEN) {
+    if (locked && pin_buffer_index < PIN_BUFFER_LEN) {
       //Notify to the user
       digitalWrite(RED_LED, LOW);
       flashLED(GREEN_LED);
       //Add value on the buffer
-      pin_buffer[pin_buffer_index++] = '4';
+      pin_buffer[pin_buffer_index++] = 4;
       //Start timeout
       timeout = TIMEOUT;
     }
@@ -446,7 +450,7 @@ void loop()
       digitalWrite(GREEN_LED, LOW);
       flashLED(GREEN_LED);
       //Add value on the buffer
-      pin_buffer[0] = '4';
+      pin_buffer[0] = 4;
       pin_buffer_index = 1;
       //Start timeout
       timeout = TIMEOUT;
@@ -484,60 +488,78 @@ void flashLED(uint8_t led)
 void errorLED(void)
 {
   digitalWrite(RED_LED, HIGH);
-  delay(2000);
+  delay(1000);
   digitalWrite(RED_LED, LOW);
+  delay(200);
+  digitalWrite(RED_LED, HIGH);
+  delay(1000);
+  digitalWrite(RED_LED, LOW);
+  delay(1000);
 }
 
 /* Argument is the password received by buttons
  * Returns true if the password is correct, false otherwise
  */
-boolean checkPin(char pin[])
+boolean checkPin(void)
 {
-  char stored_pin[PIN_LEN+1];
-
-  //Reading pin from EEPROM
-  if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, PIN_ADDR, (byte*)stored_pin, PIN_LEN+1)) {
-    if (Serial && serial) {
+  char message[KEY_MESG_LEN];
+  //Reading message from EEPROM
+  if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, KEY_MESG_ADDR, (byte*)message, KEY_MESG_LEN)) {
+    /*if (Serial && serial) {
       Serial.println("Error while reading EEPROM");
-    }
+    }*/
     errorLED();
     return false;
   }
-
-  //Comparing strings
-  return (strncmp(pin, stored_pin, PIN_LEN + 1) != 0) ? false : true;
+  
+  //Decrypting
+  for (uint8_t i = 0; i < KEY_MESG_LEN; i+=16) {
+    aes128_dec_single(pin_buffer, message+i);
+  }
+  
+  if (strncmp(message, challenge_mesg, KEY_MESG_LEN) == 0) {
+    //If the decrypted message is equal to the challenge message, then the pin inserted is correct
+    for (uint8_t i = 0; i < KEY_LEN; i++) {
+      key[i] = pin_buffer[i];
+    }
+    return true;
+  }
+  else {
+    return false;
+  }
 }
 
 /* Argument is one of the constants PASSWORD_x (where x is the number of the passowrd) */
 void typePassword(uint8_t n)
 {
-  if (n > 3) { //Must be a valid password number
-    errorLED();
-    return;
-  }
-
   //Variables declaration
-  byte *pass = (byte *)malloc(sizeof(byte)*PASS_LEN[n] + 1);
+  char *pass = (char *)malloc(sizeof(char)*PASS_LEN[n]);
   if (pass == NULL) {
-    if (Serial && serial) {
+    /*if (Serial && serial) {
       Serial.println("Error in malloc().");
-    }
+    }*/
     errorLED();
     return;
   }
 
   //Reading
-  if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, PASS_ADDR[n], pass, PASS_LEN[n] + 1)) {
-    if (Serial && serial) {
+  if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, PASS_ADDR[n], (byte *)pass, PASS_LEN[n])) {
+    /*if (Serial && serial) {
       Serial.println("Error while reading EEPROM");
-    }
+    }*/
     errorLED();
+    free(pass);
     return;
+  }
+  
+  //Decrypting
+  for (uint8_t i = 0; i < PASS_LEN[n]; i+=16) {
+    aes128_dec_single(key, pass+i);
   }
 
   //Writing
   for (uint8_t i = 0; i < PASS_LEN[n] && pass[i] != '\0'; i++) {
-    Keyboard.print((char)pass[i]);
+    Keyboard.print(pass[i]);
   }
 
   free(pass);
@@ -545,27 +567,26 @@ void typePassword(uint8_t n)
 
 void serialPrintWelcomeMessage(void)
 {
-  Serial.print("Welcome message: ");
-
   //Variable declaration
-  byte mess[INITIAL_MESSAGE_LEN + 1];
-
+  char mess[INITIAL_MESSAGE_LEN];
+  
   //Reading
-  if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, INITIAL_MESSAGE_ADDR, mess, INITIAL_MESSAGE_LEN + 1)) {
-    Serial.println("Error reading welcome message.");
+  if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, INITIAL_MESSAGE_ADDR, (byte *)mess, INITIAL_MESSAGE_LEN)) {
+    //Serial.println("Error reading welcome message.");
     return;
   }
 
   //Writing
+  Serial.print("Welcome message: ");
   for (uint8_t i = 0; i < INITIAL_MESSAGE_LEN && mess[i] != '\0'; i++) {
-    Serial.print((char)mess[i]);
+    Serial.print(mess[i]);
   }
   Serial.println("");
 }
 
 void serialPrintMenu(void)
 {
-  Serial.println("\r\nKeyper by MrModd v 1.0\r\nA Password keeper and typer\r\n");
+  Serial.println("\r\nKeyper by MrModd v 2.0 built 20130226\r\nA Password keeper and typer\r\n");
   Serial.println("Make your choice:");
   Serial.println("help ........ Print this help");
   Serial.println("lock ........ Lock the device");
@@ -598,9 +619,11 @@ void serialManageOption()
     analogWrite(RED_LED, pwm_val);
   }
   else if (strncmp(serial_buffer, "wipe", SERIAL_BUFFER_LEN + 1) == 0) {
-    //Clear data from EEPROM
+    //Clear data stored in EEPROM
     digitalWrite(GREEN_LED, LOW);
+    
     wipeData();
+    
     analogWrite(GREEN_LED, pwm_val);
   }
   else if (strncmp(serial_buffer, "welcome", SERIAL_BUFFER_LEN + 1) == 0) {
@@ -613,29 +636,29 @@ void serialManageOption()
     while (serial_buffer_index > 0) serial_buffer[--serial_buffer_index] = 0; //Empty buffer
     
     if (readLine(serial_buffer, INITIAL_MESSAGE_LEN + 1, false)) { //+1 because \n or \r is counted with other characters, but it is set to \0 when returning from readLine() function
-      //Erase memory
+      Serial.println(wait);
       digitalWrite(EEPROM_WRITE_PROTECT, LOW);
       delay(5);
-      Serial.println("Erasing memory...");
-      if (!i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, INITIAL_MESSAGE_ADDR, INITIAL_MESSAGE_LEN + 1)) {
-        Serial.println("Error erasing memory.");
-      }
+      
       //Write message
-      Serial.println("Writing bytes...");
-      i2c_1024kb_eeprom_write_page(EEPROM_ADDR, INITIAL_MESSAGE_ADDR, (byte *)serial_buffer, strlen(serial_buffer) + 1);
-      Serial.println("Done!");
+      //Serial.println("Writing bytes...");
+      i2c_1024kb_eeprom_write_page(EEPROM_ADDR, INITIAL_MESSAGE_ADDR, (byte *)serial_buffer, INITIAL_MESSAGE_LEN);
+      
       digitalWrite(EEPROM_WRITE_PROTECT, HIGH);
+      Serial.println(done);
     }
     else {
-      Serial.println("\r\nToo long message!");
+      Serial.println(too_long);
     }
     
     analogWrite(GREEN_LED, pwm_val);
   }
   else if (strncmp(serial_buffer, "pin", SERIAL_BUFFER_LEN + 1) == 0) {
     //Overwrite pin
+    char *mesg;
+    
     Serial.print("Now type the pin code on the device (max ");
-    Serial.print(PIN_LEN);
+    Serial.print(KEY_LEN);
     Serial.println(" digits):");
     
     digitalWrite(GREEN_LED, HIGH);
@@ -643,21 +666,109 @@ void serialManageOption()
     timeout = -1;
     while (pin_buffer_index > 0) pin_buffer[--pin_buffer_index] = 0; //Empty buffer
     
-    readPin(pin_buffer, PIN_LEN);
+    readPin(pin_buffer, KEY_LEN);
     
-    //Erase memory
+    Serial.println(wait);
     digitalWrite(EEPROM_WRITE_PROTECT, LOW);
     delay(5);
-    Serial.println("Erasing memory...");
-    if (!i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, PIN_ADDR, PIN_LEN + 1)) {
-      Serial.println("Error erasing memory.");
+    
+    
+    //Serial.println("Writing encoded challenge message for new pin...");
+    mesg = (char *)malloc(sizeof(char)*KEY_MESG_LEN);
+    if (mesg == NULL) {
+      //Serial.println("Error in malloc().");
+      return;
     }
-    //Write pin
-    Serial.println("Writing bytes...");
-    i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PIN_ADDR, (byte *)pin_buffer, strlen(pin_buffer) + 1);
-    Serial.println("Done!");
+    for (uint8_t i = 0; i < KEY_MESG_LEN; i++) {
+      mesg[i] = 0;
+    }
+    strncpy(mesg, challenge_mesg, KEY_MESG_LEN);
+    for (uint8_t i = 0; i < KEY_MESG_LEN; i+=16) {
+      aes128_enc_single(pin_buffer, mesg+i);
+    }
+    i2c_1024kb_eeprom_write_page(EEPROM_ADDR, KEY_MESG_ADDR, (byte *)mesg, KEY_MESG_LEN);
+    free(mesg);
+    
+    //Serial.println("Rewriting password 1...");
+    mesg = (char *)malloc(sizeof(char)*PASS_LEN[PASSWORD_1]);
+    if (mesg == NULL) {
+      //Serial.println("Error in malloc().");
+      return;
+    }
+    if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, PASS_ADDR[PASSWORD_1], (byte *)mesg, PASS_LEN[PASSWORD_1])) {
+      //Serial.println("Error while reading EEPROM");
+      return;
+    }
+    for (uint8_t i = 0; i < PASS_LEN[PASSWORD_1]; i+=16) {
+      aes128_dec_single(key, mesg+i);
+      aes128_enc_single(pin_buffer, mesg+i);
+    }
+    //Writing
+    i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_1], (byte *)mesg, PASS_LEN[PASSWORD_1]);
+    free(mesg);
+    
+    //Serial.println("Rewriting password 2...");
+    mesg = (char *)malloc(sizeof(char)*PASS_LEN[PASSWORD_2]);
+    if (mesg == NULL) {
+      //Serial.println("Error in malloc().");
+      return;
+    }
+    if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, PASS_ADDR[PASSWORD_2], (byte *)mesg, PASS_LEN[PASSWORD_2])) {
+      //Serial.println("Error while reading EEPROM");
+      return;
+    }
+    for (uint8_t i = 0; i < PASS_LEN[PASSWORD_2]; i+=16) {
+      aes128_dec_single(key, mesg+i);
+      aes128_enc_single(pin_buffer, mesg+i);
+    }
+    //Writing
+    i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_2], (byte *)mesg, PASS_LEN[PASSWORD_2]);
+    free(mesg);
+    
+    //Serial.println("Rewriting password 3...");
+    mesg = (char *)malloc(sizeof(char)*PASS_LEN[PASSWORD_3]);
+    if (mesg == NULL) {
+      //Serial.println("Error in malloc().");
+      return;
+    }
+    if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, PASS_ADDR[PASSWORD_3], (byte *)mesg, PASS_LEN[PASSWORD_3])) {
+      //Serial.println("Error while reading EEPROM");
+      return;
+    }
+    for (uint8_t i = 0; i < PASS_LEN[PASSWORD_3]; i+=16) {
+      aes128_dec_single(key, mesg+i);
+      aes128_enc_single(pin_buffer, mesg+i);
+    }
+    //Writing
+    i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_3], (byte *)mesg, PASS_LEN[PASSWORD_3]);
+    free(mesg);
+    
+    //Serial.println("Rewriting password 4...");
+    mesg = (char *)malloc(sizeof(char)*PASS_LEN[PASSWORD_4]);
+    if (mesg == NULL) {
+      //Serial.println("Error in malloc().");
+      return;
+    }
+    if (!i2c_1024kb_eeprom_read_buffer(EEPROM_ADDR, PASS_ADDR[PASSWORD_4], (byte *)mesg, PASS_LEN[PASSWORD_4])) {
+      //Serial.println("Error while reading EEPROM");
+      return;
+    }
+    for (uint8_t i = 0; i < PASS_LEN[PASSWORD_4]; i+=16) {
+      aes128_dec_single(key, mesg+i);
+      aes128_enc_single(pin_buffer, mesg+i);
+    }
+    //Writing
+    i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_4], (byte *)mesg, PASS_LEN[PASSWORD_4]);
+    free(mesg);
+    
+    for (uint8_t i = 0; i < KEY_LEN; i++) {
+      key[i] = pin_buffer[i];
+    }
+    
     digitalWrite(EEPROM_WRITE_PROTECT, HIGH);
-    delay(100);
+    Serial.println(done);
+    delay(100); //Without this, returning in loop() function, BUTTON_OK will be seen as pressed
+    
     digitalWrite(RED_LED, LOW);
     analogWrite(GREEN_LED, pwm_val);
   }
@@ -671,21 +782,24 @@ void serialManageOption()
     while (serial_buffer_index > 0) serial_buffer[--serial_buffer_index] = 0; //Empty buffer
     
     if (readLine(serial_buffer, PASS_LEN[PASSWORD_1] + 1, true)) { //+1 because \n or \r is counted with other characters, but it is set to \0 when returning from readLine() function
-      //Erase memory
+      Serial.println(wait);
       digitalWrite(EEPROM_WRITE_PROTECT, LOW);
       delay(5);
-      Serial.println("Erasing memory...");
-      if (!i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, PASS_ADDR[PASSWORD_1], PASS_LEN[PASSWORD_1] + 1)) {
-        Serial.println("Error erasing memory.");
+      
+      //Encripting
+      //Serial.println("Encripting bytes...");
+      for (uint8_t i = 0; i < PASS_LEN[PASSWORD_1]; i+=16) {
+        aes128_enc_single(key, serial_buffer+i);
       }
+      
       //Write password
-      Serial.println("Writing bytes...");
-      i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_1], (byte *)serial_buffer, strlen(serial_buffer) + 1);
-      Serial.println("Done!");
+      //Serial.println("Writing bytes...");
+      i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_1], (byte *)serial_buffer, PASS_LEN[PASSWORD_1]);
       digitalWrite(EEPROM_WRITE_PROTECT, HIGH);
+      Serial.println(done);
     }
     else {
-      Serial.println("\r\nToo long password!");
+      Serial.println(too_long);
     }
     analogWrite(GREEN_LED, pwm_val);
   }
@@ -699,21 +813,24 @@ void serialManageOption()
     while (serial_buffer_index > 0) serial_buffer[--serial_buffer_index] = 0; //Empty buffer
     
     if (readLine(serial_buffer, PASS_LEN[PASSWORD_2] + 1, true)) { //+1 because \n or \r is counted with other characters, but it is set to \0 when returning from readLine() function
-      //Erase memory
+      Serial.println(wait);
       digitalWrite(EEPROM_WRITE_PROTECT, LOW);
       delay(5);
-      Serial.println("Erasing memory...");
-      if (!i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, PASS_ADDR[PASSWORD_2], PASS_LEN[PASSWORD_2] + 1)) {
-        Serial.println("Error erasing memory.");
+      
+      //Encripting
+      //Serial.println("Encripting bytes...");
+      for (uint8_t i = 0; i < PASS_LEN[PASSWORD_1]; i+=16) {
+        aes128_enc_single(key, serial_buffer+i);
       }
+      
       //Write password
-      Serial.println("Writing bytes...");
-      i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_2], (byte *)serial_buffer, strlen(serial_buffer) + 1);
-      Serial.println("Done!");
+      //Serial.println("Writing bytes...");
+      i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_2], (byte *)serial_buffer, PASS_LEN[PASSWORD_2]);
       digitalWrite(EEPROM_WRITE_PROTECT, HIGH);
+      Serial.println(done);
     }
     else {
-      Serial.println("\r\nToo long password!");
+      Serial.println(too_long);
     }
     analogWrite(GREEN_LED, pwm_val);
   }
@@ -727,21 +844,24 @@ void serialManageOption()
     while (serial_buffer_index > 0) serial_buffer[--serial_buffer_index] = 0; //Empty buffer
     
     if (readLine(serial_buffer, PASS_LEN[PASSWORD_3] + 1, true)) { //+1 because \n or \r is counted with other characters, but it is set to \0 when returning from readLine() function
-      //Erase memory
+      Serial.println(wait);
       digitalWrite(EEPROM_WRITE_PROTECT, LOW);
       delay(5);
-      Serial.println("Erasing memory...");
-      if (!i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, PASS_ADDR[PASSWORD_3], PASS_LEN[PASSWORD_3] + 1)) {
-        Serial.println("Error erasing memory.");
+      
+      //Encripting
+      //Serial.println("Encripting bytes...");
+      for (uint8_t i = 0; i < PASS_LEN[PASSWORD_1]; i+=16) {
+        aes128_enc_single(key, serial_buffer+i);
       }
+      
       //Write password
-      Serial.println("Writing bytes...");
-      i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_3], (byte *)serial_buffer, strlen(serial_buffer) + 1);
-      Serial.println("Done!");
+      //Serial.println("Writing bytes...");
+      i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_3], (byte *)serial_buffer, PASS_LEN[PASSWORD_3]);
       digitalWrite(EEPROM_WRITE_PROTECT, HIGH);
+      Serial.println(done);
     }
     else {
-      Serial.println("\r\nToo long password!");
+      Serial.println(too_long);
     }
     analogWrite(GREEN_LED, pwm_val);
   }
@@ -755,21 +875,24 @@ void serialManageOption()
     while (serial_buffer_index > 0) serial_buffer[--serial_buffer_index] = 0; //Empty buffer
     
     if (readLine(serial_buffer, PASS_LEN[PASSWORD_4] + 1, true)) { //+1 because \n or \r is counted with other characters, but it is set to \0 when returning from readLine() function
-      //Erase memory
+      Serial.println(wait);
       digitalWrite(EEPROM_WRITE_PROTECT, LOW);
       delay(5);
-      Serial.println("Erasing memory...");
-      if (!i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, PASS_ADDR[PASSWORD_4], PASS_LEN[PASSWORD_4] + 1)) {
-        Serial.println("Error erasing memory.");
+      
+      //Encripting
+      //Serial.println("Encripting bytes...");
+      for (uint8_t i = 0; i < PASS_LEN[PASSWORD_1]; i+=16) {
+        aes128_enc_single(key, serial_buffer+i);
       }
+      
       //Write password
-      Serial.println("Writing bytes...");
-      i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_4], (byte *)serial_buffer, strlen(serial_buffer) + 1);
-      Serial.println("Done!");
+      //Serial.println("Writing bytes...");
+      i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_4], (byte *)serial_buffer, PASS_LEN[PASSWORD_4]);
       digitalWrite(EEPROM_WRITE_PROTECT, HIGH);
+      Serial.println(done);
     }
     else {
-      Serial.println("\r\nToo long password!");
+      Serial.println(too_long);
     }
     analogWrite(GREEN_LED, pwm_val);
   }
@@ -780,19 +903,108 @@ void serialManageOption()
 
 void wipeData(void)
 {
+  uint8_t empty_key[KEY_LEN];
+  char *mesg;
+  
+  for (uint8_t i = 0; i < KEY_LEN; i++) {
+    empty_key[i] = 0;
+  }
+  
+  Serial.println(wait);
   digitalWrite(EEPROM_WRITE_PROTECT, LOW);
   delay(5);
-  Serial.println("This operation may take a long time, would you like to have a coffe?");
-  if (!i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, INITIAL_MESSAGE_ADDR, INITIAL_MESSAGE_LEN + 1) ||
-      !i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, PIN_ADDR, PIN_LEN + 1) ||
-      !i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, PASS_ADDR[PASSWORD_1], PASS_LEN[PASSWORD_1] + 1) ||
-      !i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, PASS_ADDR[PASSWORD_2], PASS_LEN[PASSWORD_2] + 1) ||
-      !i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, PASS_ADDR[PASSWORD_3], PASS_LEN[PASSWORD_3] + 1) ||
-      !i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, PASS_ADDR[PASSWORD_4], PASS_LEN[PASSWORD_4] + 1)) {
-    Serial.println("Error erasing memory.");
+  
+  //Serial.println("Erasing welcome message...");
+  if (!i2c_1024kb_eeprom_erase_bytes(EEPROM_ADDR, INITIAL_MESSAGE_ADDR, INITIAL_MESSAGE_LEN)) {
+    //Serial.println("Error erasing memory.");
+    return;
   }
+  
+  //Serial.println("Writing encoded challenge message for empty pin");
+  mesg = (char *)malloc(sizeof(char)*KEY_MESG_LEN);
+  if (mesg == NULL) {
+    //Serial.println("Error in malloc().");
+    return;
+  }
+  for (uint8_t i = 0; i < KEY_MESG_LEN; i++) {
+    mesg[i] = 0;
+  }
+  //Copy challenge message to mesg
+  strncpy(mesg, challenge_mesg, KEY_MESG_LEN);
+  //Crypt challenge message
+  for (uint8_t i = 0; i < KEY_MESG_LEN; i+=16) {
+    aes128_enc_single(empty_key, mesg+i);
+  }
+  //Write encrypted challenge message on EEPROM
+  i2c_1024kb_eeprom_write_page(EEPROM_ADDR, KEY_MESG_ADDR, (byte *)mesg, KEY_MESG_LEN);
+  free(mesg);
+  
+  //Write an encrypted version of an empty password of length PASS_LEN[PASSWORD_1]
+  //Serial.println("Erasing password 1...");
+  mesg = (char *)malloc(sizeof(char)*PASS_LEN[PASSWORD_1]);
+  if (mesg == NULL) {
+    //Serial.println("Error in malloc().");
+    return;
+  }
+  for (uint8_t i = 0; i < PASS_LEN[PASSWORD_1]; i++) {
+    mesg[i] = 0;
+  }
+  for (uint8_t i = 0; i < PASS_LEN[PASSWORD_1]; i+=16) {
+    aes128_enc_single(empty_key, mesg+i);
+  }
+  i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_1], (byte*)mesg, PASS_LEN[PASSWORD_1]);
+  free(mesg);
+  
+  //Write an encrypted version of an empty password of length PASS_LEN[PASSWORD_2]
+  //Serial.println("Erasing password 2...");
+  mesg = (char *)malloc(sizeof(char)*PASS_LEN[PASSWORD_2]);
+  if (mesg == NULL) {
+    //Serial.println("Error in malloc().");
+    return;
+  }
+  for (uint8_t i = 0; i < PASS_LEN[PASSWORD_2]; i++) {
+    mesg[i] = 0;
+  }
+  for (uint8_t i = 0; i < PASS_LEN[PASSWORD_2]; i+=16) {
+    aes128_enc_single(empty_key, mesg+i);
+  }
+  i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_2], (byte*)mesg, PASS_LEN[PASSWORD_2]);
+  free(mesg);
+  
+  //Write an encrypted version of an empty password of length PASS_LEN[PASSWORD_3]
+  //Serial.println("Erasing password 3...");
+  mesg = (char *)malloc(sizeof(char)*PASS_LEN[PASSWORD_3]);
+  if (mesg == NULL) {
+    //Serial.println("Error in malloc().");
+    return;
+  }
+  for (uint8_t i = 0; i < PASS_LEN[PASSWORD_3]; i++) {
+    mesg[i] = 0;
+  }
+  for (uint8_t i = 0; i < PASS_LEN[PASSWORD_3]; i+=16) {
+    aes128_enc_single(empty_key, mesg+i);
+  }
+  i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_3], (byte*)mesg, PASS_LEN[PASSWORD_3]);
+  free(mesg);
+  
+  //Write an encrypted version of an empty password of length PASS_LEN[PASSWORD_4]
+  //Serial.println("Erasing password 4...");
+  mesg = (char *)malloc(sizeof(char)*PASS_LEN[PASSWORD_4]);
+  if (mesg == NULL) {
+    //Serial.println("Error in malloc().");
+    return;
+  }
+  for (uint8_t i = 0; i < PASS_LEN[PASSWORD_4]; i++) {
+    mesg[i] = 0;
+  }
+  for (uint8_t i = 0; i < PASS_LEN[PASSWORD_4]; i+=16) {
+    aes128_enc_single(empty_key, mesg+i);
+  }
+  i2c_1024kb_eeprom_write_page(EEPROM_ADDR, PASS_ADDR[PASSWORD_4], (byte*)mesg, PASS_LEN[PASSWORD_4]);
+  free(mesg);
+  
   digitalWrite(EEPROM_WRITE_PROTECT, HIGH);
-  Serial.println("Done!");
+  Serial.println(done);
 }
 
 boolean readLine(char *buffer, uint8_t length, boolean hide_typing)
@@ -845,11 +1057,10 @@ boolean readLine(char *buffer, uint8_t length, boolean hide_typing)
       }
     }
   }
-  
   return false; //Unreachable
 }
 
-void readPin(char *buffer, uint8_t length)
+void readPin(uint8_t *buffer, uint8_t length)
 {
   uint8_t i = 0;
   int timeout = -1;
@@ -884,7 +1095,7 @@ void readPin(char *buffer, uint8_t length)
       
       flashLED(GREEN_LED);
       //Add value on the buffer
-      buffer[i++] = '1';
+      buffer[i++] = 1;
       //Print a character on the serial console
       Serial.print("*");
       //Start timeout
@@ -897,7 +1108,7 @@ void readPin(char *buffer, uint8_t length)
       
       flashLED(GREEN_LED);
       //Add value on the buffer
-      buffer[i++] = '2';
+      buffer[i++] = 2;
       //Print a character on the serial console
       Serial.print("*");
       //Start timeout
@@ -910,7 +1121,7 @@ void readPin(char *buffer, uint8_t length)
       //Print a character on the serial console
       flashLED(GREEN_LED);
       //Add value on the buffer
-      buffer[i++] = '3';
+      buffer[i++] = 3;
       //Print a character on the serial console
       Serial.print("*");
       //Start timeout
@@ -923,7 +1134,7 @@ void readPin(char *buffer, uint8_t length)
       
       flashLED(GREEN_LED);
       //Add value on the buffer
-      buffer[i++] = '4';
+      buffer[i++] = 4;
       //Print a character on the serial console
       Serial.print("*");
       //Start timeout
